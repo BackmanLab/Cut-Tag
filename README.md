@@ -283,18 +283,35 @@ done
 
 ```
 
-Script to call the CutTag alignment script  is below
+Script to call the EU-seq alignment script (Tophat) is below
 
 ```shell
+#!/bin/bash
+#SBATCH -A p32171 ##--## SLURM alt #SBATCH -A b1042
+#SBATCH -p genhimem
+
+#!/bin/bash
+#SBATCH -A b1042
+#SBATCH -p genomics
+#SBATCH -N 1
+#SBATCH --ntasks-per-node=16
+#SBATCH --mem-per-cpu=13G
+#SBATCH --mail-user=lucascarter2025@u.northwestern.edu
+#SBATCH --mail-type=BEGIN
+#SBATCH --mail-type=END
+#SBATCH -t 48:00:00
+#SBATCH --job-name=07.19.2024
+#SBATCH --output=outlog
+#SBATCH --error=errlog
 ##-- header here --##
 
-echo -e "Usage: sh $0 -f <Forward Read> -w <Path to Working Directory> -g <Path to Bowtie Indices> -r <Path to Annotation File> -t <threads> -m <min MAPQ score> -s <Spike in score (optional)> -p < path to SEACR (optional)> -b < sets MAC2 to --broad (optional)> \n"
+echo -e "Usage: sh $0 -f <Forward Read> -w <Path to Working Directory> -g <Path to Bowtie Indices> -r <Path to Annotation File> -c <chromosome size file name > -t <threads> -m <min MAPQ score> -s <Spike in score (optional)> -p < path to SEACR (optional)> -b < sets MAC2 to --broad (optional)> -d <remove duplicates with Picard (optional)> \n"
 
 ## with MAC2
 echo "Processing data"
 for file in *R1_001.fastq.gz;
 do echo "${file}";
-   bash CutTag.sh -f ${file} -w /projects/b1042/BackmanLab/Lucas/090124_CnT/fastq/S3/Backman26_7.19.2024/ -g /projects/b1042/BackmanLab/Lucas/090124_CnT/genome/ref/hg38 -r /projects/b1042/BackmanLab/Lucas/090124_CnT/genome/gtf/hg38.ncbiRefSeq.gtf -c hg38.chrom.sizes -t 24 -m 2;
+   bash CutTag.sh -f ${file} -w /projects/b1042/BackmanLab/Lucas/090124_CnT/fastq/S3/Backman26_7.19.2024/ -g /projects/b1042/BackmanLab/Lucas/090124_CnT/genome/ref/hg38 -r /projects/b1042/BackmanLab/Lucas/090124_CnT/genome/gtf/hg38.ncbiRefSeq.gtf -c hg38.chrom.sizes -t 16 -m 2 -d ;
 done
 
 ## with SEACR
@@ -303,5 +320,389 @@ for file in *R1_001.fastq.gz;
 do echo "${file}";
    bash CutTag.sh -f ${file} -w /projects/b1042/BackmanLab/Lucas/090124_CnT/fastq/test/ -g /projects/b1042/BackmanLab/Lucas/090124_CnT/genome/ref/hg38 -r /projects/b1042/BackmanLab/Lucas/090124_CnT/genome/gtf/hg38.ncbiRefSeq.gtf -p /home/lmc0633/executables/SEACR/SEACR_1.3.sh -c hg38.chrom.sizes -t 16 -m 2;
 done
+
+```
+
+For the correlation plot generation script, i adapted this code for use as follows:
+
+```R
+##== R command ==##
+
+library(corrplot)
+
+list.files('/projects/b1042/BackmanLab/Lucas/090124_CnT/fastq/S1/BED/', pattern = ".bin.bed")
+
+n=1 # c(1,2,3)
+path <- '/projects/b1042/BackmanLab/Lucas/090124_CnT/fastq/'
+subdir <- c("S1", "S2", "S3")
+dir <- paste0(path, subdir[n], "/BED/")
+hists <- list.files(dir, pattern = ".bin.bed")
+
+reprod = c()
+fragCount = NULL
+for(hist in hists){
+  
+  if(is.null(fragCount)){
+    
+    fragCount = read.table(paste0(dir, hist), header = FALSE) 
+    colnames(fragCount) = c("chrom", "bin", hist)
+    
+  }else{
+    
+    fragCountTmp = read.table(paste0(dir, hist), header = FALSE)
+    colnames(fragCountTmp) = c("chrom", "bin", hist)
+    fragCount = full_join(fragCount, fragCountTmp, by = c("chrom", "bin"))
+    
+  }
+}
+
+M = cor(fragCount %>% select(-c("chrom", "bin")) %>% log2(), use = "complete.obs") 
+
+corrplot(M, method = "color", outline = T, addgrid.col = "darkgray", order="hclust", addrect = 3, rect.col = "black", rect.lwd = 3,cl.pos = "b", tl.col = "indianred4", tl.cex = 0.5, cl.cex = 0.5, addCoef.col = "black", number.digits = 2, number.cex = 0.5, col = colorRampPalette(c("midnightblue","white","darkred"))(100))
+
+
+```
+Script for calling just SEACR peaks. Can't use NORM setting unless I have an input control
+
+```shell
+
+#!/bin/bash
+#SBATCH -A p32171 ##--## SLURM start
+#SBATCH -p genhimem
+#SBATCH -N 1
+#SBATCH --ntasks-per-node=1
+#SBATCH --mem=200G
+#SBATCH --mail-user=lucascarter2025@u.northwestern.edu
+#SBATCH --mail-type=BEGIN
+#SBATCH --mail-type=END
+#SBATCH -t 24:00:00
+#SBATCH --job-name=build_genome
+#SBATCH --output=outlog
+#SBATCH --error=errlog
+##-- header here --##
+
+seacr=/home/lmc0633/executables/SEACR/SEACR_1.3.sh
+bgfold=/projects/b1042/BackmanLab/Lucas/090124_CnT/fastq/S3/BEDGRAPH
+pkfold=/projects/b1042/BackmanLab/Lucas/090124_CnT/fastq/S3/peaks
+
+module load R/4.3.0
+module load bedtools
+
+bash /home/lmc0633/executables/SEACR/SEACR_1.3.sh /projects/b1042/BackmanLab/Lucas/090124_CnT/fastq/S3/BEDGRAPH/BM125_WT_S3.bedgraph 0.01 non stringent /projects/b1042/BackmanLab/Lucas/090124_CnT/fastq/S3/peaks/test.peaks
+cd ${bgfold}
+
+echo "Processing data"
+for file in *.bedgraph;
+do echo "${file}";
+
+
+P1=$(echo $file | sed 's/.bedgraph/.seacr.peaks/g')
+
+echo "8. Calling SEACR Peaks on ${file}"
+echo -e "\t bash $seacr ${bgfold}/${file} 0.01 norm relaxed ${pkfold}/${P1}"
+
+bash $seacr ${bgfold}/${file} 0.01 non stringent ${pkfold}/${P1}
+
+done
+
+echo -e "Peak calling complete \n"
+
+
+```
+#### Later modification
+
+I looked into merging replicates using [Coverage()](https://ro-che.info/articles/2018-07-11-chip-seq-consensus) in R and unfortunately, you lose all the metadate (qValue, pValue, signal) when doing so. I decided to merge my technical replicates at the FASTQ level and then call the peaks again on those. Following calling peaks, I plan to use Bedtools intersect to find the conensus peaks since it preserves the metadata and other information. Merging all technical replicates in submission 2 and in submission 3
+
+```shell
+
+out=/projects/b1042/BackmanLab/Lucas/090124_CnT/fastq/merged/fastq/ 
+in=/projects/b1042/BackmanLab/Lucas/090124_CnT/fastq/S3/Backman26_7.19.2024/
+
+read1=BM135_Pol_2_degraded_S13_R2_001.fastq.gz  ; read2=BM138_Pol_2_degraded_S16_R2_001.fastq.gz ;  file=Merged.K9AB.P2KO.S2_R2_001.fastq.gz
+
+#Merge input BAMS
+cat ${in}${read1} ${in}${read2} > ${out}${file}
+
+```
+
+```shell
+#!/bin/bash
+#SBATCH -A b1042 ##--## SLURM start
+#SBATCH -p genomics
+#SBATCH -N 1
+#SBATCH --ntasks-per-node=10
+#SBATCH --mem-per-cpu=10G
+#SBATCH --mail-user=lucascarter2025@u.northwestern.edu
+#SBATCH --mail-type=BEGIN
+#SBATCH --mail-type=END
+#SBATCH -t 6:00:00
+#SBATCH --job-name=compute matrix
+#SBATCH --output=outlog
+#SBATCH --error=errlog
+
+module load deeptools
+
+##== linux command ==##
+
+inpath=/projects/b1042/BackmanLab/Lucas/090124_CnT/fastq/S2/peaks/
+outpath=/projects/b1042/BackmanLab/Lucas/090124_CnT/fastq/S2/peaks/test/
+bgpath=/projects/b1042/BackmanLab/Lucas/090124_CnT/fastq/S2/coverage/
+
+bgfile=BM109_S1.rpgc.bigWig
+pkfile=BM109_S1.seacr.peaks.relaxed.bed
+otfile=$(echo $pkfile | sed 's/.seacr.peaks.relaxed.bed/.seacr.peaks.summitRegion.bed/g')
+matfile=$(echo $pkfile | sed 's/.seacr.peaks.relaxed.bed/_SEACR.mat.gz/g')
+
+label=P1AB_WT
+rep=S2
+cores=10
+
+awk '{split($6, summit, ":"); split(summit[2], region, "-"); print summit[1]"\t"region[1]"\t"region[2]}' $inpath$pkfile > $outpath$otfile
+
+computeMatrix reference-point -S $bgpath$bgfile \
+              -R $outpath$otfile \
+              --skipZeros -o $outpath$matfile -p $cores -a 3000 -b 3000 --referencePoint center
+
+plotHeatmap -m $outpath$matfile -out ${outpath}${matfile}_SEACR_heatmap.png --sortUsing sum --startLabel "Peak Start" -\
+-endLabel "Peak End" --xAxisLabel "" --regionsLabel "Peaks" --samplesLabel "${label} ${rep}"
+
+
+inpath=/projects/b1042/BackmanLab/Lucas/090124_CnT/fastq/S2/peaks/
+outpath=/projects/b1042/BackmanLab/Lucas/090124_CnT/fastq/S2/peaks/test/
+bgpath=/projects/b1042/BackmanLab/Lucas/090124_CnT/fastq/S2/coverage/
+
+bgfile=BM110_S2.rpgc.bigWig
+pkfile=BM110_S2.seacr.peaks.relaxed.bed
+otfile=$(echo $pkfile | sed 's/.seacr.peaks.relaxed.bed/.seacr.peaks.summitRegion.bed/g')
+matfile=$(echo $pkfile | sed 's/.seacr.peaks.relaxed.bed/_SEACR.mat.gz/g')
+
+label=P1AB_P1KO
+rep=S2
+
+awk '{split($6, summit, ":"); split(summit[2], region, "-"); print summit[1]"\t"region[1]"\t"region[2]}' $inpath$pkfile > $outpath$otfile
+
+computeMatrix reference-point -S $bgpath$bgfile \
+              -R $outpath$otfile \
+              --skipZeros -o $outpath$matfile -p $cores -a 3000 -b 3000 --referencePoint center
+
+plotHeatmap -m $outpath$matfile -out ${outpath}${matfile}_SEACR_heatmap.png --sortUsing sum --startLabel "Peak Start" -\
+-endLabel "Peak End" --xAxisLabel "" --regionsLabel "Peaks" --samplesLabel "${label} ${rep}"
+
+```
+
+### downsampling reads 
+
+I'm downsampling my reads because some are over-sequenced and some are undersequenced. I worry this will contribute to variability between conditions, since some samples did experience overamplification. For this task, I am using [seqtk](https://github.com/lh3/seqtk)
+
+usage: seqtk sample -s <seed> <path/in/fastq.gz> <#ofsamples> > <path/out/fastq.gz>
+
+First thing to do is count the total number of reads per file
+```shell
+#!/bin/bash
+#SBATCH -A b1042 ##--## SLURM start
+#SBATCH -p genomics
+#SBATCH -N 1
+#SBATCH --ntasks-per-node=1
+#SBATCH --mem=50G
+#SBATCH --mail-user=lucascarter2025@u.northwestern.edu
+#SBATCH -t 2:00:00
+#SBATCH --job-name=count_reads
+
+for file in *R1_001.fastq.gz;
+do echo "${file}";
+READS=$(expr $(zcat ${file} | wc -l) / 4)
+echo -e "\t file: $file has $READS reads  "
+echo -e "\t file: $file reads: $READS " >> reads.txt
+done
+```
+
+S1:
+
+|File                                |      Reads    	   | Name      |
+|------------------------------------|-------------------|-----------|
+| file: K4AB-Pol1_S4_R1_001.fastq.gz | reads: 50,054,872 | K4AB_P1KO |
+| file: K4AB-WT_S3_R1_001.fastq.gz   | reads: 68,741,393 | K4AB_WT   |
+| file: K9AB-Pol1_S8_R1_001.fastq.gz | reads: 5,858,924  | K9AB_P1KO |
+| file: K9AB-WT_S7_R1_001.fastq.gz   | reads: 2,249,616  | K9AB_WT   |
+| file: P1AB-Pol1_S2_R1_001.fastq.gz | reads: 21,542,758 | P1AB_P1KO |
+| file: P1AB-WT_S1_R1_001.fastq.gz   | reads: 4,246,499  | P1AB_WT   |
+| file: P2AB-Pol1_S6_R1_001.fastq.gz | reads: 56,878,563 | P2AB_P1KO |
+| file: P2AB-WT_S5_R1_001.fastq.gz   | reads: 21,233,193 | P2AB_WT   |
+
+S2:
+
+|File                              |      Reads      | Name      |
+|----------------------------------|-----------------|-----------|
+|	 file: BM109_S1_R1_001.fastq.gz  |reads: 2,831,267 | P1AB_WT   |
+|	 file: BM110_S2_R1_001.fastq.gz  |reads: 1,997,534 | P1AB_P1KO |
+|	 file: BM111_S3_R1_001.fastq.gz  |reads: 2,761,436 | P1AB_P2KO |
+|	 file: BM112_S4_R1_001.fastq.gz  |reads: 2,904,866 | P2AB_WT   |
+|	 file: BM113_S5_R1_001.fastq.gz  |reads: 8,911,631 | P2AB_P1KO |
+|	 file: BM114_S6_R1_001.fastq.gz  |reads: 3,923,244 | P2AB_P2KO |
+|	 file: BM115_S7_R1_001.fastq.gz  |reads: 11,335,882| K27AB_P1KO|
+|	 file: BM116_S8_R1_001.fastq.gz  |reads: 4,809,199 | K27AB_P2KO|
+|	 file: BM117_S9_R1_001.fastq.gz  |reads: 408,680   | P1AB_WT   |
+|	 file: BM118_S10_R1_001.fastq.gz |reads: 3,241,433 | P1AB_P1KO |
+|	 file: BM119_S11_R1_001.fastq.gz |reads: 3,001,093 | P1AB_P2KO |
+|	 file: BM120_S12_R1_001.fastq.gz |reads: 1,265,939 | P2AB_WT   |
+|	 file: BM121_S13_R1_001.fastq.gz |reads: 4,573,860 | P2AB_P1KO |
+|	 file: BM122_S14_R1_001.fastq.gz |reads: 6,784,824 | P2AB_P2KO |
+|	 file: BM123_S15_R1_001.fastq.gz |reads: 2,668,701 | K27AB_P1KO|
+|	 file: BM124_S16_R1_001.fastq.gz |reads: 2,413,773 | K27AB_P2KO|
+
+Changing names to: 
+
+BM109_S1_R1_001.fastq.gz P1AB_WT_S1_R1_001.fastq.gz
+BM110_S2_R1_001.fastq.gz P1AB_P1KO_S2_R1_001.fastq.gz
+BM111_S3_R1_001.fastq.gz P1AB_P2KO_S3_R1_001.fastq.gz
+BM112_S4_R1_001.fastq.gz P2AB_WT_S4_R1_001.fastq.gz
+BM113_S5_R1_001.fastq.gz P2AB_P1KO_S5_R1_001.fastq.gz
+BM114_S6_R1_001.fastq.gz P2AB_P2KO_S6_R1_001.fastq.gz
+BM115_S7_R1_001.fastq.gz K27AB_P1KO_S7_R1_001.fastq.gz
+BM116_S8_R1_001.fastq.gz K27AB_P2KO_S8_R1_001.fastq.gz
+BM117_S9_R1_001.fastq.gz P1AB_WT_S9_R1_001.fastq.gz
+BM118_S10_R1_001.fastq.gz P1AB_P1KO_S10_R1_001.fastq.gz
+BM119_S11_R1_001.fastq.gz P1AB_P2KO_S11_R1_001.fastq.gz
+BM120_S12_R1_001.fastq.gz P2AB_WT_S12_R1_001.fastq.gz
+BM121_S13_R1_001.fastq.gz P2AB_P1KO_S13_R1_001.fastq.gz
+BM122_S14_R1_001.fastq.gz P2AB_P2KO_S14_R1_001.fastq.gz
+BM123_S15_R1_001.fastq.gz K27AB_P1KO_S15_R1_001.fastq.gz
+BM124_S16_R1_001.fastq.gz K27AB_P2KO_S16_R1_001.fastq.gz
+
+S3:
+
+|File                                                |  Reads           | Name      |
+|----------------------------------------------------|------------------|-----------|
+file: BM125_WT_S3_R1_001.fastq.gz                    | reads: 45,823,405  | P1AB_WT 
+file: BM126_Pol_1_degraded_S4_R1_001.fastq.gz        | reads: 34,609,056  | P1AB_P1KO
+file: BM127_Pol_2_degraded_S5_R1_001.fastq.gz        | reads: 28,356,451  | P1AB_P2KO
+file: BM128_WT_S6_R1_001.fastq.gz                    | reads: 34,639,433  | CTCFAB_WT
+file: BM129_WT_S7_R1_001.fastq.gz                    | reads: 49,503,419  | CTCFAB_WT
+file: BM130_WT_S8_R1_001.fastq.gz                    | reads: 47,559,479  | CTCFAB_WT
+file: BM131_Pol_1_degraded_S9_R1_001.fastq.gz        | reads: 38,030,748  | CTCFAB_P1KO
+file: BM132_Pol_2_degraded_S10_R1_001.fastq.gz       | reads: 28,916,144  | CTCFAB_P2KO
+file: BM133_WT_S11_R1_001.fastq.gz                   | reads: 63,835,066  | K9AB_WT
+file: BM134_Pol_1_degraded_S12_R1_001.fastq.gz       | reads: 54,217,202  | K9AB_P1KO
+file: BM135_Pol_2_degraded_S13_R1_001.fastq.gz       | reads: 53,024,658  | K9AB_P2KO
+file: BM136_WT_S14_R1_001.fastq.gz                   | reads: 49,808,186  | K9AB_WT
+file: BM137_Pol_1_degraded_S15_R1_001.fastq.gz       | reads: 53,189,723  | K9AB_P1KO
+file: BM138_Pol_2_degraded_S16_R1_001.fastq.gz       | reads: 72,659,514  | K9AB_P2KO
+file: BM139_Pol_1_degraded_S17_R1_001.fastq.gz       | reads: 21,882,985  | CTCFAB_P1KO
+file: BM140_Pol_2_degraded_S18_R1_001.fastq.gz       | reads: 23,661,905  | CTCFAB_P2KO
+
+Changing names to:
+
+mv BM125_WT_S3_R2_001.fastq.gz P1AB_WT_S3_R2_001.fastq.gz
+mv BM126_Pol_1_degraded_S4_R2_001.fastq.gz P1AB_P1KO_S4_R2_001.fastq.gz
+mv BM127_Pol_2_degraded_S5_R2_001.fastq.gz P1AB_P2KO_S5_R2_001.fastq.gz
+mv BM128_WT_S6_R2_001.fastq.gz CTCFAB_WT_S6_R2_001.fastq.gz
+mv BM129_WT_S7_R2_001.fastq.gz CTCFAB_WT_S7_R2_001.fastq.gz
+mv BM130_WT_S8_R2_001.fastq.gz CTCFAB_WT_S8_R2_001.fastq.gz
+mv BM131_Pol_1_degraded_S9_R2_001.fastq.gz CTCFAB_P1KO_S9_R2_001.fastq.gz
+mv BM132_Pol_2_degraded_S10_R2_001.fastq.gz CTCFAB_P2KO_S10_R2_001.fastq.gz
+mv BM133_WT_S11_R2_001.fastq.gz K9AB_WT_S11_R2_001.fastq.gz
+mv BM134_Pol_1_degraded_S12_R2_001.fastq.gz K9AB_P1KO_S12_R2_001.fastq.gz
+mv BM135_Pol_2_degraded_S13_R2_001.fastq.gz K9AB_P2KO_S13_R2_001.fastq.gz
+mv BM136_WT_S14_R2_001.fastq.gz K9AB_WT_S14_R2_001.fastq.gz
+mv BM137_Pol_1_degraded_S15_R2_001.fastq.gz K9AB_P1KO_S15_R2_001.fastq.gz
+mv BM138_Pol_2_degraded_S16_R2_001.fastq.gz K9AB_P2KO_S16_R2_001.fastq.gz
+mv BM139_Pol_1_degraded_S17_R2_001.fastq.gz CTCFAB_P1KO_S17_R2_001.fastq.gz
+mv BM140_Pol_2_degraded_S18_R2_001.fastq.gz CTCFAB_P2KO_S18_R2_001.fastq.gz
+
+Then we can normalize based on read #
+
+```shell
+
+#!/bin/bash
+#SBATCH -A p32171 ##--## SLURM start
+#SBATCH -p short
+#SBATCH -N 1
+#SBATCH --ntasks-per-node=1
+#SBATCH --mem=150G
+#SBATCH --mail-user=lucascarter2025@u.northwestern.edu
+#SBATCH --mail-type=BEGIN
+#SBATCH --mail-type=END
+#SBATCH -t 3:00:00
+#SBATCH --job-name=downsample
+#SBATCH --output=outlog
+#SBATCH --error=errlog
+
+cutoff=1000000
+norm=2000000
+highnorm=10000000
+seed=100
+
+## Paths
+inpath=$1 ## usage sbatch <sample.sh> </inpath/>
+outpath=/projects/b1042/BackmanLab/Lucas/090124_CnT/fastq/sampled/fastq/
+
+module load seqtk/Dec17
+
+for file in *R1_001.fastq.gz;
+do echo "${file}";
+
+## File names
+reads=$(expr $(zcat ${file} | wc -l) / 4)
+R2=$(echo $file | sed 's/R1_001.fastq.gz/R2_001.fastq.gz/g')
+R1out=$(echo $file | sed 's/R1_001.fastq.gz/sampled_R1_001.fastq/g')
+R2out=$(echo $R2 | sed 's/R2_001.fastq.gz/sampled_R2_001.fastq/g')
+
+if [[ $reads -lt $cutoff ]] ## If there is no path to seacr software, use MACS2
+then
+
+    echo -e "\t Sample ${file} has too few reads: ${reads} \n"
+
+elif [[ $reads -lt $norm ]] && [[ $reads -gt $cutoff ]]
+then
+
+echo -e "\t Sample ${file} with ${reads} reads: sampled to 1,500,000 "
+echo -e "\t seqtk sample -s $seed ${inpath}${file} 1500000 > ${outpath}${R1out} \n"
+
+seqtk sample -s $seed ${inpath}${file} 1500000 > ${outpath}${R1out}
+seqtk sample -s $seed ${inpath}${R2} 1500000 > ${outpath}${R2out}
+
+elif [[ $reads -gt $highnorm ]] 
+then
+
+echo -e "\t Sample ${file} with ${reads} reads: sampled to $highnorm "
+echo -e "\t seqtk sample -s $seed ${inpath}${file} $highnorm > ${outpath}${R1out} \n"
+
+seqtk sample -s $seed ${inpath}${file} $highnorm > ${outpath}${R1out}
+seqtk sample -s $seed ${inpath}${R2} $highnorm > ${outpath}${R2out}
+
+else
+
+echo -e "\t Sample ${file} with ${reads} reads: sampled to $norm "
+echo -e "\t seqtk sample -s $seed ${inpath}${file} $norm > ${outpath}${R1out} \n"
+
+seqtk sample -s $seed ${inpath}${file} $norm > ${outpath}${R1out}
+seqtk sample -s $seed ${inpath}${R2} $norm > ${outpath}${R2out}
+
+fi
+done
+
+gzip *.fastq
+
+
+```
+
+I checked the duplication rate using the following code and found that the rates for each sample were quite high (consistent with overamplication by PCR (my fault) and oversequencing by the core (NuSeq's fault)). [This publication](https://www.biorxiv.org/content/10.1101/2022.03.30.486382v1.full.pdf) addresses these issues and found similar duplication issues. Here is the code I used:
+
+```R
+## Summarize the duplication information from the picard summary outputs.
+
+n=3
+dir.sam <- "/projects/b1042/BackmanLab/Lucas/090124_CnT/fastq/"
+subdirs <- c("S1", "S2", "S3")
+sam.path <- paste0(dir.sam, subdirs[n],"/SAM/")
+hists <- list.files(sam.path, pattern = ".dupMark.txt")
+
+dupResult = c()
+for(hist in hists){
+  dupRes = read.table(paste0(sam.path,hist), header = TRUE, fill = TRUE)
+  
+  histInfo = strsplit(hist, "_")[[1]]
+  dupResult = data.frame(Histone = histInfo[1], Replicate = histInfo[2], MappedFragNum_hg38 = dupRes$READ_PAIRS_EXAMINED[1] %>% as.character %>% as.numeric, DuplicationRate = dupRes$PERCENT_DUPLICATION[1] %>% as.character %>% as.numeric * 100, EstimatedLibrarySize = dupRes$ESTIMATED_LIBRARY_SIZE[1] %>% as.character %>% as.numeric) %>% mutate(UniqueFragNum = MappedFragNum_hg38 * (1-DuplicationRate/100))  %>% rbind(dupResult, .)
+}
 
 ```
