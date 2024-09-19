@@ -29,11 +29,12 @@ module load deeptools/3.1.1
 helpFunction()
 {
       echo "*********************************** how to use CutTag.sh ***********************************"
-      echo -e "Usage: sh $0 -f <Forward Read> -w <Path to Working Directory> -g <Path to Bowtie Indices> -r <Path to Annotation File> -c <chromosome size file name > -t <threads> -m <min MAPQ score> -s <Spike in score (optional)> -p < path to SEACR (optional)> -b < sets MAC2 to --broad (optional)> \n"
+      echo -e "Usage: sh $0 -f <Forward Read> -w <Path to Working Directory> -g <Path to Bowtie Indices> -r <Path to Annotation File> -c <chromosome size file name > -t <threads> -m <min MAPQ score> -s <Spike in score (optional)> -p < path to SEACR (optional)> -b < sets MAC2 to --broad (optional)> -d <remove duplicates with Picard (optional)> \n"
       echo -e "Run script in directory where fastqs are located \n"
       echo "This script completes several functions: Read QC, Quality Control, Alignment, Sorting, and read count of features:"
       echo -e "\t -- Quality Control: eliminates the adaptor and low quality reads using trim_galore."
-      echo -e "\t -- Mapping: Mapping via Bowtie2/Tophat for all features"
+      echo -e "\t -- Mapping: Mapping via Bowtie2 for all features"
+      echo -e "\t -- Duplication: Marking duplicates and removing them (optional)"
       echo -e "\t -- Sorting: Sort the bam files, mark uniquely mapping reads, generate coverage files "
       echo -e "\t -- Conversion: Convert clean BAMs to BED and BEDGRAPH format "
       echo -e "\t -- Peak Calling: Call peaks using MACS2 or SEACR"
@@ -48,7 +49,7 @@ helpFunction()
 
 ##--------------------------------------------------------------## options
 
-while getopts "f:w:g:r:c:t:m:s:p:b" opt
+while getopts "f:w:g:r:c:t:m:s:p:bd" opt
 do
    case $opt in
       f) R1=$OPTARG ;; ## forward read | string
@@ -61,6 +62,7 @@ do
       s) spikein=$OPTARG ;; ## spike in value | integer
       p) seacr=$OPTARG ;; ## call peaks with SEACR instead of MACS2 | path to SEACR.sh/.r | string
       b) broad=1 ;; ## broad peaks option for MACS2 | no input
+      d) rmdups=1 ;; ## remove duplicates in Picard | no input
       ?) echo "Unknown argument --${OPTARG}"; helpFunction ;; # Print helpFunction in case parameter is non-existent
    esac
 done
@@ -157,6 +159,10 @@ bgfold="${root}BEDGRAPH"
 pkfold="${root}peaks"
 [ ! -d $pkfold ]&&mkdir $pkfold
 
+# Make peaks directory
+rsfold="${root}results"
+[ ! -d $rsfold ]&&mkdir $rsfold
+
 ##--------------------------------------------------------------## 1. Trim and QC
 # begin data processing
 
@@ -198,13 +204,28 @@ S3=$(echo $S2 | sed 's/R1_001.sort.sam/R1_001.sort.md.sam/g')
 ###
 echo "3. Sorting ${S1} and marking duplicates in ${S2}"
 echo -e " \t picard SortSam I=${samfold}/${S1} O=${samfold}/${S2} SORT_ORDER=coordinate"
-echo -e " \t picard MarkDuplicates I=${samfold}/${S2} O=${samfold}/${S3} METRICS_FILE=${samfold}/${R1}_dupMark.txt"
 
 ## Sort SAM files
 picard SortSam I=${samfold}/${S1} O=${samfold}/${S2} SORT_ORDER=coordinate
 
-## Mark duplicates in sorted SAM files
-picard MarkDuplicates I=${samfold}/${S2} O=${samfold}/${S3} METRICS_FILE=${samfold}/${R1}_dupMark.txt
+if [[ $rmdups -eq 1 ]] ## If there is no path to seacr software, use MACS2
+then
+
+    echo -e "\t  3.1 Removing duplicates in ${S2}"
+    echo -e " \t picard MarkDuplicates I=${samfold}/${S2} O=${samfold}/${S3}  REMOVE_DUPLICATES=true METRICS_FILE=${samfold}/${R1}_dupMark.txt"
+
+    ## Mark duplicates and remove them in sorted SAM files
+    picard MarkDuplicates I=${samfold}/${S2} O=${samfold}/${S3}  REMOVE_DUPLICATES=true METRICS_FILE=${samfold}/${R1}_dupMark.txt
+
+else 
+
+   echo -e "\t  3.1 Duplicates marked but not removed in ${S2}"
+   echo -e "\t  picard MarkDuplicates I=${samfold}/${S2} O=${samfold}/${S3} METRICS_FILE=${samfold}/${R1}_dupMark.txt"
+
+   ## Mark duplicates in sorted SAM files
+   picard MarkDuplicates I=${samfold}/${S2} O=${samfold}/${S3} METRICS_FILE=${samfold}/${R1}_dupMark.txt
+
+fi
 
 echo -e "Duplicates marked in ${S3} \n"
 ###
@@ -233,7 +254,7 @@ BW1=$(echo $B2 | sed 's/.ind.bam/.cpm.bigWig/g')
 BW2=$(echo $B2 | sed 's/.ind.bam/.rpgc.bigWig/g')
 
 ###
-echo "4. Generating coverage files for ${B2}"
+echo "5. Generating coverage files for ${B2}"
 echo -e "\t bamCoverage --bam ${bamfold}/${B2} --normalizeUsing CPM --outFileName ${covfold}/${BW1} --binSize 1 --numberOfProcessors max"
 echo -e "\t bamCoverage --bam ${bamfold}/${B2} --normalizeUsing  RPGC --outFileName ${covfold}/${BW2} --effectiveGenomeSize 2747877702 --binSize 1 --numberOfProcessors max"
 
@@ -251,7 +272,7 @@ BD1=$(echo $B2 | sed 's/.ind.bam/.bed/g')
 BD2=$(echo $BD1 | sed 's/.bed/.filt.bed/g')
 BD3=$(echo $BD2 | sed 's/.filt.bed/.fragments.bed/g')
 BD4=$(echo $BD3 | sed 's/.fragments.bed/.bin.bed/g')
-
+B2N=$(echo $B2 | sed 's/.ind.bam/.n.bam/g')
 
 ###
 echo "6. Converting ${B2} to BED files ${BD1}."
@@ -259,8 +280,10 @@ echo -e "\t bedtools bamtobed -i ${bamfold}/${B2} -bedpe >${bedfold}/${BD1}"
 echo -e "\t awk '$1==$4 && $6-$2 < 1000 {print $0}' ${bedfold}/${BD1} >${bedfold}/${BD2} "
 echo -e "\t cut -f 1,2,6 ${bedfold}/${BD2}  | sort -k1,1 -k2,2n -k3,3n  >${bedfold}/${BD3}"
 echo -e "\t awk -v w=$binLen '{print $1, int(($2 + $3)/(2*w))*w + w/2}' ${bedfold}/${BD3}  | sort -k1,1V -k2,2n | uniq -c | awk -v OFS="\t" '{print $2, $3, $1}' |  sort -k1,1V -k2,2n  >${bedfold}/${BD4}"
+echo -e "\t samtools view -F 0x04 ${samfold}/${S1} | awk -F'\t' 'function abs(x){return ((x < 0.0) ? -x : x)} {print abs($9)}' | sort | uniq -c | awk -v OFS="\t" '{print $2, $1/2}' > ${samfold}/${S1}_fragmentLen.txt"
 
-bedtools bamtobed -i ${bamfold}/${B2} -bedpe >${bedfold}/${BD1}
+samtools sort -n  ${bamfold}/${B2} > ${bamfold}/${B2N} ## Sort by read alignment flag for
+bedtools bamtobed -i ${bamfold}/${B2N} -bedpe >${bedfold}/${BD1}
 
 ## Keep the read pairs that are on the same chromosome and fragment length less than 1000bp.
 awk '$1==$4 && $6-$2 < 1000 {print $0}' ${bedfold}/${BD1} >${bedfold}/${BD2} 
@@ -271,6 +294,9 @@ cut -f 1,2,6 ${bedfold}/${BD2}  | sort -k1,1 -k2,2n -k3,3n  >${bedfold}/${BD3}
 ## Bin genome for correlation calculation later
 binLen=500
 awk -v w=$binLen '{print $1, int(($2 + $3)/(2*w))*w + w/2}' ${bedfold}/${BD3}  | sort -k1,1V -k2,2n | uniq -c | awk -v OFS="\t" '{print $2, $3, $1}' |  sort -k1,1V -k2,2n  >${bedfold}/${BD4}
+
+## Extract the 9th column from the alignment sam file which is the fragment length
+samtools view -F 0x04 ${samfold}/${S1} | awk -F'\t' 'function abs(x){return ((x < 0.0) ? -x : x)} {print abs($9)}' | sort | uniq -c | awk -v OFS="\t" '{print $2, $1/2}' > ${samfold}/${S1}_fragmentLen.txt
 
 echo -e "Done converting ${B2} to ${BD2} and ${BD3}. Generated binned genome ${BD4} for correlation analysis. \n"
 ###
@@ -347,12 +373,14 @@ macs2 callpeak -t ${bamfold}/${B1} -g hs -f BAMPE --broad -n ${P1} --outdir ${pk
 else
 
 cd ${bgfold}
-P1=$(echo $BG1 | sed 's/.bedgraph/.seacr.peaks/g')
+module load R/4.3.0
+
+S1=$(echo $BG1 | sed 's/.bedgraph/.seacr.peaks/g')
 
 echo "8. Calling SEACR Peaks on ${BG1}"
-echo -e "\t bash $seacr ${bgfold}/${BG1} 0.01 non relaxed ${pkfold}/${P1}"
+echo -e "\t bash $seacr ${bgfold}/${BG1} 0.01 non relaxed ${pkfold}/${S1}"
 
-bash $seacr ${bgfold}/${BG1} 0.01 non relaxed ${pkfold}/${P1}
+bash $seacr ${bgfold}/${BG1} 0.01 non relaxed ${pkfold}/${S1}
 
 fi
 
@@ -371,9 +399,38 @@ ls -lh ${root}${PWD##*/}/${R1}
 ls -lh ${root}${PWD##*/}/${R2}
 
 fastqc -t ${threads} ${root}${PWD##*/}/${R1} ${root}${PWD##*/}/${R2} -o ${qcfold}
-echo -e " ******** All process have been completed ******** \n \n"
+
+echo -e "FASTQC complete \n"
 ###
 
+##--------------------------------------------------------------## 9. Compute Heatmap
 
+module load deeptools
 
+echo "10. Computing heatmap of peaks ${R1}"
+echo -e "\t fastqc -t ${threads} ${root}${PWD##*/}/${R1} ${root}${PWD##*/}/${R2} -o ${qcfold}"
 
+if [ -z "${seacr}" ]
+then
+
+echo -e "\t using MACS2 peaks"
+matfile=$(echo $BG1 | sed 's/.bedgraph/_MACS2.mat.gz/g')
+M1=$(echo $BG1 | sed 's/.bedgraph/.macs2_summits.bed/g')
+
+else
+
+echo -e "\t using SEACR peaks"
+M1=$(echo $S1 | sed 's/.seacr.peaks.relaxed.bed/.seacr.peaks.summitRegion.bed/g')
+matfile=$(echo $S1 | sed 's/.seacr.peaks.relaxed.bed/_SEACR.mat.gz/g')
+awk '{split($6, summit, ":"); split(summit[2], region, "-"); print summit[1]"\t"region[1]"\t"region[2]}' ${pkfold}/${S1} > ${pkfold}/${M1}
+
+fi
+
+echo -e "\t computeMatrix reference-point -S ${covfold}/${BW2} -R ${pkfold}/${M1} --skipZeros -o ${pkfold}/${matfile} -p $threads -a 3000 -b 3000 --referencePoint center"
+computeMatrix reference-point -S ${covfold}/${BW2} -R ${pkfold}/${M1} --skipZeros -o ${pkfold}/${matfile} -p $threads -a 3000 -b 3000 --referencePoint center
+
+echo -e "\t plotHeatmap -m ${pkfold}/${matfile} -out ${rsfold}${matfile}_SEACR_heatmap.png --sortUsing sum --startLabel "Peak Start" --endLabel "Peak End" --xAxisLabel "" --regionsLabel "Peaks" --samplesLabel "${M1}""
+plotHeatmap -m ${pkfold}/${matfile} -out ${rsfold}/${matfile}_heatmap.png --sortUsing sum --startLabel "Peak Start" --endLabel "Peak End" --xAxisLabel "" --regionsLabel "Peaks" --samplesLabel "${M1}"
+
+echo -e " ******** All process have been completed ******** \n \n"
+###
